@@ -1,0 +1,209 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score
+import os # Used to simulate file loading
+
+# --- 0. Simulate Data Loading (Since I cannot access external files) ---
+# Replace this section with actual file loading if running locally:
+# df = pd.read_csv('weather_forecast.csv')
+print("--- WARNING: Using simulated data. Replace with actual file load in your environment. ---")
+np.random.seed(42)
+data_size = 250
+data = {
+    'temperature': np.random.uniform(10, 35, data_size),
+    'humidity': np.random.uniform(40, 95, data_size),
+    'pressure': np.random.uniform(980, 1030, data_size),
+    'rainfall': np.random.uniform(0, 50, data_size) + 0.5 * np.random.rand(data_size) * np.random.uniform(10, 35, data_size) # Target variable with some dependency
+}
+df = pd.DataFrame(data)
+# Simulate 4 missing values randomly in the 'pressure' column for the task requirement
+missing_indices = np.random.choice(df.index, size=4, replace=False)
+df.loc[missing_indices, 'pressure'] = np.nan
+# --- End of Simulation ---
+
+
+# ======================================================================
+# 1. Data Preparation and Exploration
+# ======================================================================
+print(f"Dataset Information: Shape: {df.shape}, Missing values: {df.isnull().sum().to_dict()}")
+print("Basic statistics:")
+print(df.describe())
+
+# Handle Missing Values (Imputation with Mean for simplicity)
+df = df.fillna(df.mean())
+
+# Separate features and target
+X = df[['temperature', 'humidity', 'pressure']].values
+y = df['rainfall'].values
+
+# Split data into training (80%) and testing (20%)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+print(f"Data Split: Train ({X_train.shape[0]}, {X_train.shape[1]}), ({y_train.shape[0]},), Test ({X_test.shape[0]}, {X_test.shape[1]}), ({y_test.shape[0]},)")
+
+
+# ======================================================================
+# 2. Implement Euclidean Distance and Neighbor Finding
+# ======================================================================
+
+def euclidean_distance(point1, point2):
+    """Computes the Euclidean distance between two points."""
+    return np.sqrt(np.sum((point1 - point2)**2))
+
+def find_k_nearest_neighbors(X_train, y_train, query_point, k):
+    """Finds the K nearest neighbors for a single query point."""
+    distances = []
+    # Use vectorized numpy operations for efficient calculation
+    # Reshape query_point to enable broadcasting (1, features) - (N_train, features)
+    query_point_reshaped = query_point.reshape(1, -1)
+    
+    # Vectorized computation of squared Euclidean distance for all training points
+    # (X_train - query_point_reshaped) calculates the difference matrix
+    # **2 squares the differences
+    # np.sum(..., axis=1) sums squared differences across features
+    squared_distances = np.sum((X_train - query_point_reshaped)**2, axis=1)
+    distances = np.sqrt(squared_distances)
+    
+    # Get the indices that would sort the distances
+    sorted_indices = np.argsort(distances)
+    
+    # Select the indices of the K nearest neighbors
+    k_indices = sorted_indices[:k]
+    
+    # Return the neighbors (data points and target values) and their distances
+    k_neighbors = X_train[k_indices]
+    k_neighbor_targets = y_train[k_indices]
+    k_distances = distances[k_indices]
+    
+    return k_neighbors, k_neighbor_targets, k_distances
+
+# Test with K=5 neighbors (for the first test point)
+k_test = 5
+test_point = X_test[0]
+_, _, k_distances_test = find_k_nearest_neighbors(X_train, y_train, test_point, k_test)
+print(f"\nTest with K={k_test} neighbors (Distances for first test point): {np.round(k_distances_test, 4)}")
+
+
+# ======================================================================
+# 3. Implement Uniform KNN Regression
+# ======================================================================
+
+def uniform_knn_predict(X_train, y_train, X_test, k):
+    """Generates predictions using Uniform (unweighted) KNN Regression."""
+    predictions = []
+    for query_point in X_test:
+        _, k_neighbor_targets, _ = find_k_nearest_neighbors(X_train, y_train, query_point, k)
+        
+        # Prediction is the simple average of the K neighbor targets (Uniform Weighting)
+        prediction = np.mean(k_neighbor_targets)
+        predictions.append(prediction)
+    return np.array(predictions)
+
+# Generate predictions and calculate metrics for Uniform KNN (K=5)
+K_uniform = 5
+y_pred_uniform = uniform_knn_predict(X_train, y_train, X_test, K_uniform)
+mae_uniform = mean_absolute_error(y_test, y_pred_uniform)
+r2_uniform = r2_score(y_test, y_pred_uniform)
+
+print(f"\nUniform KNN (K={K_uniform}): MAE: {mae_uniform:.4f} R squared Score: {r2_uniform:.4f}")
+
+
+# ======================================================================
+# 4. Implement Gaussian Kernel Weighted KNN
+# ======================================================================
+
+def gaussian_kernel_weight(distance, h):
+    """Calculates Gaussian kernel weight."""
+    # Prevent division by zero if distance is zero and h is small, though h>0 is assumed
+    if distance == 0:
+        return 1.0 # Max weight for exact match
+    return np.exp(-(distance**2) / (2 * h**2))
+
+def gaussian_knn_predict(X_train, y_train, X_test, k, h):
+    """Generates predictions using Gaussian Kernel Weighted KNN Regression."""
+    predictions = []
+    for query_point in X_test:
+        _, k_neighbor_targets, k_distances = find_k_nearest_neighbors(X_train, y_train, query_point, k)
+        
+        # Calculate weights using the Gaussian kernel
+        # Add a tiny epsilon to zero distances to avoid numerical instability if h=0
+        weights = np.array([gaussian_kernel_weight(d, h) for d in k_distances])
+        
+        # Ensure weights are not all zero (e.g., if h is extremely small and distances are large)
+        if np.sum(weights) == 0:
+            # Fallback to uniform if weights sum to zero
+            prediction = np.mean(k_neighbor_targets)
+        else:
+            # Prediction is the weighted average: (sum(weight * target)) / sum(weight)
+            prediction = np.sum(weights * k_neighbor_targets) / np.sum(weights)
+        predictions.append(prediction)
+    return np.array(predictions)
+
+# Generate predictions and calculate metrics for Gaussian Kernel KNN (K=5, h=1.0)
+K_gaussian = 5
+H_gaussian = 1.0
+y_pred_gaussian = gaussian_knn_predict(X_train, y_train, X_test, K_gaussian, H_gaussian)
+mae_gaussian = mean_absolute_error(y_test, y_pred_gaussian)
+r2_gaussian = r2_score(y_test, y_pred_gaussian)
+
+print(f"Gaussian Kernel KNN (K={K_gaussian}, h={H_gaussian}): MAE: {mae_gaussian:.4f} R squared Score: {r2_gaussian:.4f}")
+
+
+# ======================================================================
+# 5. Comparison and Visualization
+# ======================================================================
+
+# Create comparison table
+performance_data = {
+    'Method': ['Uniform KNN', 'Gaussian Kernel KNN'],
+    'K': [K_uniform, K_gaussian],
+    'h': ['N/A', H_gaussian],
+    'MAE': [mae_uniform, mae_gaussian],
+    'R^2 Score': [r2_uniform, r2_gaussian]
+}
+comparison_df = pd.DataFrame(performance_data)
+
+print("\nPerformance Comparison: [Table showing both methods]")
+print(comparison_df.to_string(index=False, float_format='%.4f'))
+
+# Create Visualization
+plt.figure(figsize=(14, 5))
+
+# Subplot 1: Actual vs Predicted (Uniform KNN)
+plt.subplot(1, 2, 1)
+plt.scatter(y_test, y_pred_uniform, alpha=0.6)
+plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 'r--') # Ideal line
+plt.title(f'Uniform KNN (K={K_uniform}) Predictions')
+plt.xlabel('Actual Rainfall (mm)')
+plt.ylabel('Predicted Rainfall (mm)')
+plt.grid(True, linestyle=':', alpha=0.6)
+
+# Subplot 2: Actual vs Predicted (Gaussian Kernel KNN)
+plt.subplot(1, 2, 2)
+plt.scatter(y_test, y_pred_gaussian, alpha=0.6, color='g')
+plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 'r--') # Ideal line
+plt.title(f'Gaussian Kernel KNN (K={K_gaussian}, h={H_gaussian}) Predictions')
+plt.xlabel('Actual Rainfall (mm)')
+plt.ylabel('Predicted Rainfall (mm)')
+plt.grid(True, linestyle=':', alpha=0.6)
+
+plt.tight_layout()
+# In a local environment, use plt.show()
+# plt.show()
+# Save plot for visualization output
+plt.savefig("knn_comparison_visualization.png")
+print("\nVisualization: Two subplots comparing predictions (saved as knn_comparison_visualization.png)")
+
+# Analysis
+print("\nAnalysis: [Explain performance differences]")
+
+if mae_gaussian < mae_uniform:
+    print("Gaussian Kernel KNN performs better. The weighted average approach likely gives more importance to very close neighbors, leading to a more localized and accurate prediction by reducing the influence of K-th nearest, but potentially distant, neighbors.")
+elif mae_uniform < mae_gaussian:
+    print("Uniform KNN performs better. This suggests that the Gaussian kernel's weighting might be too aggressive (perhaps due to an unoptimized 'h' value) or that the K neighbors are generally close enough that applying uniform weight provides better generalization.")
+else:
+    print("Both methods performed similarly, suggesting that the K nearest neighbors are equally relevant to the prediction.")
+# ======================================================================
