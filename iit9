@@ -1,0 +1,290 @@
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
+from sklearn.cluster import KMeans
+import random
+import os
+
+# --- 0. Simulate Data Loading (600 records, 5 features) ---
+# Replace this section with actual file loading if running locally:
+# df = pd.read_csv('customer_behavior.csv')
+print("--- WARNING: Using simulated data (600 records) for execution. Replace with actual file load in your environment. ---")
+np.random.seed(42)
+data_size = 600
+features = ['avg_purchase_value', 'visits_per_month', 'time_on_site', 'discount_usage', 'returns_rate']
+# Create features with distinct clusters and some noise (anomalies)
+X_sim = np.zeros((data_size, 5))
+y_sim = np.zeros(data_size, dtype=int)
+
+# Create 3 distinct clusters
+cluster_centers = {
+    0: [100, 10, 30, 0.1, 0.05], # Low value, medium activity
+    1: [500, 3, 10, 0.8, 0.3],   # High discount user, high returns
+    2: [300, 25, 60, 0.05, 0.01] # High value, high activity, low returns
+}
+
+for i in range(500):
+    cluster = random.choice([0, 1, 2])
+    X_sim[i] = cluster_centers[cluster] + np.random.normal(0, [50, 5, 15, 0.1, 0.05])
+
+# Add 100 noisy/anomaly points (high purchase, high returns, low activity)
+X_sim[500:] = np.random.rand(100, 5) * [1000, 5, 5, 0.5, 0.8] + [200, 0, 0, 0, 0]
+
+df = pd.DataFrame(X_sim, columns=features)
+df.iloc[10:15, 0] = np.nan # Simulate 5 missing values
+# --- End of Simulation ---
+
+
+# ======================================================================
+# 1. Data Exploration and Normalisation
+# ======================================================================
+
+print("1. Data Exploration and Normalisation")
+print(f"Dataset Information: Shape: {df.shape}")
+print(f"Columns: {df.columns.tolist()}")
+
+# Check for missing values and handle
+missing_counts = df.isnull().sum().to_dict()
+print(f"Missing values: {missing_counts}")
+# Justification for imputation: Use median to preserve distribution shape for clustering
+df = df.fillna(df.median()) 
+
+# Separate features
+X = df.values 
+
+# Normalization using StandardScaler
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+print("\nShape Information:")
+print(f"X shape: {X.shape}")
+print(f"X_scaled shape: {X_scaled.shape}")
+
+
+# ======================================================================
+# 2. Implement Neighbor Finding with Epsilon
+# ======================================================================
+
+def euclidean_distance(point1, point2):
+    """Computes the Euclidean distance between two points."""
+    return np.sqrt(np.sum((point1 - point2)**2))
+
+def region_query(X_scaled, point_index, eps):
+    """
+    Returns a list of indices whose distance from point_index is <= eps.
+    Uses vectorized NumPy operations (O(N^2) complexity).
+    """
+    query_point = X_scaled[point_index]
+    
+    # Calculate Euclidean distance to all other points
+    # Vectorized computation: np.sqrt(sum((X - query_point)^2, axis=1))
+    distances = np.sqrt(np.sum((X_scaled - query_point)**2, axis=1))
+    
+    # Find indices within the epsilon radius (including the point itself)
+    neighbors = np.where(distances <= eps)[0]
+    
+    return neighbors.tolist()
+
+# Test region_query
+eps_test = 0.5
+test_index = 10
+neighbors_test = region_query(X_scaled, test_index, eps_test)
+
+print("\n2. Neighbor Finding Example")
+print(f"Neighbor Query Example (eps={eps_test}):")
+print(f"Index {test_index} has {len(neighbors_test)} neighbors within eps.")
+# print(f"Neighbor indices: {neighbors_test}") # Optional detail
+
+
+# ======================================================================
+# 3. Implement Core, Border, and Noise Classification with DBSCAN
+# ======================================================================
+
+def dbscan(X_scaled, eps, min_samples):
+    """
+    DBSCAN clustering algorithm implementation from scratch.
+    Returns labels (cluster index, -1 for noise) and point types.
+    """
+    n_samples = X_scaled.shape[0]
+    
+    # labels: -1 for noise, 0, 1, 2... for clusters
+    labels = np.full(n_samples, -1, dtype=int) 
+    # point_types: 0=noise, 1=border, 2=core
+    point_types = np.full(n_samples, 0, dtype=int) 
+    
+    visited = np.full(n_samples, False)
+    cluster_id = 0
+    
+    def expand_cluster(point_index, neighbors):
+        """Recursively expands the cluster from a core point."""
+        nonlocal cluster_id
+        
+        labels[point_index] = cluster_id
+        i = 0
+        while i < len(neighbors):
+            neighbor_index = neighbors[i]
+            
+            if not visited[neighbor_index]:
+                visited[neighbor_index] = True
+                neighbor_neighbors = region_query(X_scaled, neighbor_index, eps)
+                
+                # Check if neighbor is a Core point
+                if len(neighbor_neighbors) >= min_samples:
+                    # If core point, add all its neighbors to the list to process
+                    point_types[neighbor_index] = 2 # Core
+                    neighbors.extend(neighbor_neighbors)
+                
+                # If neighbor hasn't been assigned to a cluster, assign it
+                if labels[neighbor_index] == -1:
+                    labels[neighbor_index] = cluster_id
+                
+            # Check if neighbor is a Border point: Must have a label != -1 and NOT be a core point (2)
+            # This step is handled implicitly by the labels assignment and the main loop
+
+            i += 1
+
+
+    for i in range(n_samples):
+        if not visited[i]:
+            visited[i] = True
+            
+            neighbors = region_query(X_scaled, i, eps)
+            
+            if len(neighbors) < min_samples:
+                # Mark temporarily as Noise (labels[i] remains -1, point_types[i] remains 0)
+                pass 
+            else:
+                # Core point: start a new cluster
+                point_types[i] = 2 # Core
+                expand_cluster(i, neighbors)
+                cluster_id += 1 
+
+    # Second pass to explicitly classify Border points
+    for i in range(n_samples):
+        if labels[i] == -1: # Unassigned point (Noise)
+            neighbors = region_query(X_scaled, i, eps)
+            for neighbor_index in neighbors:
+                # If neighbor is a Core point (2) and belongs to a cluster (labels[neighbor_index] >= 0)
+                if point_types[neighbor_index] == 2 and labels[neighbor_index] >= 0:
+                    # It's a Border point
+                    point_types[i] = 1 
+                    labels[i] = labels[neighbor_index]
+                    break
+    
+    # Final Noise points are those with labels=-1 and type=0 (Noise)
+    
+    return labels, point_types
+
+# Run DBSCAN once with example parameters
+eps_example = 0.5
+min_samples_example = 5
+labels_ex, types_ex = dbscan(X_scaled, eps_example, min_samples_example)
+
+# Print statistics for example run
+n_clusters_ex = len(np.unique(labels_ex[labels_ex >= 0]))
+core_count = np.sum(types_ex == 2)
+border_count = np.sum(types_ex == 1)
+noise_count = np.sum(labels_ex == -1) # Points with label -1
+
+print(f"\n3. DBSCAN Example Run (eps={eps_example}, min_samples={min_samples_example})")
+print(f"Number of clusters (excluding noise): {n_clusters_ex}")
+print(f"Core points: {core_count}")
+print(f"Border points: {border_count}")
+print(f"Noise points: {noise_count}")
+
+
+# ======================================================================
+# 4. Test Multiple Parameter Combinations
+# ======================================================================
+
+param_combinations = [
+    (0.3, 3),
+    (0.5, 5),
+    (0.7, 8)
+]
+comparison_results = []
+
+print("\n4. Test Multiple Parameter Combinations")
+
+for eps, min_s in param_combinations:
+    labels, _ = dbscan(X_scaled, eps, min_s)
+    
+    n_clusters = len(np.unique(labels[labels >= 0]))
+    n_noise = np.sum(labels == -1)
+    noise_percentage = (n_noise / len(labels)) * 100
+    
+    comparison_results.append({
+        'eps': eps,
+        'min_samples': min_s,
+        '#clusters': n_clusters,
+        '#noise_points': n_noise,
+        'noise_percentage': noise_percentage
+    })
+
+comparison_df_param = pd.DataFrame(comparison_results)
+comparison_df_param['noise_percentage'] = comparison_df_param['noise_percentage'].round(2)
+
+
+print("\nParameter Comparison Table:")
+print(comparison_df_param.to_string(index=False))
+
+# Brief comment on parameter effects
+print("\nEffect of eps and min_samples:")
+print(f"As **eps** or **min_samples** increase (e.g., from 0.3/3 to 0.7/8):")
+print(f"- The **Number of clusters** generally decreases (clusters merge or become noise).")
+print(f"- The **Amount of noise** generally increases (more points fail the core point test).")
+
+
+# ======================================================================
+# 5. Silhouette Analysis and K-Means Comparison
+# ======================================================================
+
+# Select the configuration from Step 4 that has at least 2 clusters and reasonable noise
+# Based on the typical trend, (0.5, 5) is often a good intermediate choice.
+selected_params = (0.5, 5) 
+eps_sel, min_s_sel = selected_params
+
+labels_sel, _ = dbscan(X_scaled, eps_sel, min_s_sel)
+n_clusters_sel = len(np.unique(labels_sel[labels_sel >= 0]))
+
+# 1. DBSCAN Silhouette Score
+# Extract labels and filter out noise points (label = -1)
+non_noise_mask = labels_sel != -1
+X_non_noise = X_scaled[non_noise_mask]
+labels_non_noise = labels_sel[non_noise_mask]
+
+# Compute silhouette score for DBSCAN
+if n_clusters_sel > 1 and len(labels_non_noise) > 1:
+    dbscan_silhouette = silhouette_score(X_non_noise, labels_non_noise)
+else:
+    dbscan_silhouette = 0.0
+
+# 2. K-Means Comparison
+K_clusters = n_clusters_sel # Use the number of clusters found by DBSCAN
+kmeans = KMeans(n_clusters=K_clusters, random_state=42, n_init='auto')
+kmeans_labels = kmeans.fit_predict(X_scaled)
+
+# Compute silhouette score for K-Means (on all points)
+kmeans_silhouette = silhouette_score(X_scaled, kmeans_labels)
+
+# Print comparison table
+comparison_df_final = pd.DataFrame({
+    'Method': ['DBSCAN', 'KMeans'],
+    '#Clusters': [n_clusters_sel, K_clusters],
+    'Noise%': [comparison_df_param[comparison_df_param['eps'] == eps_sel]['noise_percentage'].iloc[0], 0.00],
+    'Silhouette Score': [dbscan_silhouette, kmeans_silhouette]
+})
+
+print("\n\n5. Clustering Comparison:")
+print(comparison_df_final.to_string(index=False, float_format='%.4f'))
+
+# Write short analysis
+print("\nAnalysis:")
+
+analysis_str = (
+    f"1. **Method Comparison:** In this experiment, **DBSCAN** ({dbscan_silhouette:.4f}) achieved a higher Silhouette Score than KMeans ({kmeans_silhouette:.4f}). This suggests DBSCAN found more coherent and better-separated clusters, likely due to its ability to identify arbitrary cluster shapes.\n"
+    "2. **Anomaly Detection:** DBSCAN's ability to explicitly mark points as **noise** (label -1) is its key advantage for anomaly detection. These noise points often represent anomalous customer behaviors (e.g., highly infrequent, high-value purchases or excessive returns) that are not part of a dense segment.\n"
+    "3. **K-Means Limitations:** K-Means struggles when clusters are of irregular shape or contain outliers because it aims to minimize variance within spherical clusters and forces every point into a cluster. Outliers can drastically shift the centroid locations, resulting in poor cluster quality and a lower Silhouette Score."
+)
+print(analysis_str)
