@@ -1,0 +1,218 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_score, recall_score, accuracy_score
+import os # Used to simulate file loading
+
+# --- 0. Simulate Data Loading (Since I cannot access external files) ---
+# Replace this section with actual file loading if running locally:
+# df = pd.read_csv('diabetes_risk.csv')
+print("--- WARNING: Using simulated data (400 records) for execution. Replace with actual file load in your environment. ---")
+np.random.seed(42)
+data_size = 400
+# Simulate feature data (glucose, bmi, age)
+X_data = np.random.rand(data_size, 3) * [100, 20, 40] + [80, 20, 20] 
+# Simulate target variable (y) with some bias for high glucose/bmi/age
+y_data = ((0.5 * X_data[:, 0] + 0.8 * X_data[:, 1] + 0.3 * X_data[:, 2] - 100) > 0).astype(int)
+# Ensure class imbalance similar to real-world data (e.g., more 0s than 1s)
+y_data[np.random.choice(np.where(y_data == 0)[0], size=50, replace=False)] = 1 # Introduce some noise/imbalance
+df = pd.DataFrame(X_data, columns=['glucose_level', 'bmi', 'age'])
+df['diabetes_risk'] = y_data
+# Normalize features
+df.iloc[:, :-1] = (df.iloc[:, :-1] - df.iloc[:, :-1].mean()) / df.iloc[:, :-1].std()
+# --- End of Simulation ---
+
+
+# ======================================================================
+# 1. Data Preparation
+# ======================================================================
+
+# Load dataset and display shape
+X = df[['glucose_level', 'bmi', 'age']].values
+y = df['diabetes_risk'].values.reshape(-1, 1) # Reshape to (N, 1)
+
+print(f"Dataset Information:")
+print(f"Shape: {df.shape}")
+
+# Check class distribution
+class_counts = df['diabetes_risk'].value_counts().to_dict()
+print(f"Class distribution: {class_counts}")
+
+# Split into 75% training and 25% testing
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, random_state=42
+)
+
+# Display shapes of train and test sets
+print("Data Split:")
+print(f"Train shapes: {X_train.shape}, {y_train.shape}")
+print(f"Test shapes: {X_test.shape}, {y_test.shape}")
+
+
+# ======================================================================
+# 2. Implement Core Functions
+# ======================================================================
+
+def sigmoid(z):
+    """Implement sigmoid activation function."""
+    return 1 / (1 + np.exp(-z))
+
+def binary_cross_entropy_loss(y_true, y_pred):
+    """Implement binary cross entropy loss function (vectorized)."""
+    m = y_true.shape[0] # Number of samples
+    epsilon = 1e-15 # Small value to prevent log(0)
+    # Log Loss L = -1/m * sum( y*log(y_pred) + (1-y)*log(1-y_pred) )
+    loss = (-1 / m) * np.sum(y_true * np.log(y_pred + epsilon) + (1 - y_true) * np.log(1 - y_pred + epsilon))
+    return loss
+
+def compute_gradients(X, y_true, y_pred):
+    """Implement gradient computation for weights (dw) and bias (db)."""
+    m = X.shape[0] # Number of samples
+    
+    # Error E = y_pred - y_true
+    error = y_pred - y_true
+    
+    # dw = 1/m * X^T * E (X is N x D, E is N x 1. dw is D x 1)
+    dw = (1 / m) * X.T @ error
+    
+    # db = 1/m * sum(E) (db is scalar)
+    db = (1 / m) * np.sum(error)
+    
+    return dw, db
+
+# Initialization parameters
+D = X_train.shape[1] # Number of features (3)
+learning_rate = 0.01
+epochs = 100
+
+# Initialize weights and bias
+W = np.zeros((D, 1)) # Weights shape: (3, 1)
+b = 0                # Bias as scalar
+
+print("\nInitialization:")
+print(f"Weights shape: {W.shape}")
+print(f"Bias: {b}")
+
+# ======================================================================
+# 3. Training Loop Implementation
+# ======================================================================
+
+loss_history = []
+final_loss = 0
+
+print(f"\nTraining Parameters:")
+print(f"Learning rate: {learning_rate}")
+print(f"Epochs: {epochs}")
+
+for epoch in range(epochs):
+    # Forward propagation
+    # Linear combination: z = X*W + b (N x 1)
+    Z = X_train @ W + b
+    
+    # Sigmoid activation: y_pred = sigma(Z) (N x 1)
+    A = sigmoid(Z)
+    
+    # Loss calculation
+    loss = binary_cross_entropy_loss(y_train, A)
+    loss_history.append(loss)
+    
+    # Gradient computation
+    dw, db = compute_gradients(X_train, y_train, A)
+    
+    # Parameter updates (Gradient Descent)
+    W = W - learning_rate * dw
+    b = b - learning_rate * db
+    
+    final_loss = loss
+    
+    # Optional: print loss every 10 epochs for tracking
+    # if (epoch + 1) % 10 == 0:
+    #     print(f"Epoch {epoch+1}/{epochs} Loss: {loss:.4f}")
+
+# Display final learned parameters (rounded to 4 decimals)
+print("\nTraining Complete:")
+print(f"Final Weights: {W.T[0].round(4).tolist()}")
+print(f"Final Bias: {b.round(4)}")
+print(f"Final Loss: {final_loss:.4f}")
+
+# ======================================================================
+# 4. Evaluation and Threshold Analysis
+# ======================================================================
+
+def predict_probabilities(X, W, b):
+    """Generate probability predictions."""
+    Z = X @ W + b
+    return sigmoid(Z)
+
+def evaluate_metrics(y_true, y_pred_prob, threshold):
+    """Calculate accuracy, precision, and recall for a given threshold."""
+    # Convert probabilities to class labels
+    y_pred_class = (y_pred_prob >= threshold).astype(int)
+    
+    # Accuracy (Manual calculation)
+    accuracy = np.mean(y_pred_class == y_true)
+    
+    # Precision and Recall (using sklearn.metrics as allowed)
+    precision = precision_score(y_true, y_pred_class)
+    recall = recall_score(y_true, y_pred_class)
+    
+    return accuracy, precision, recall
+
+# Generate probability predictions on test set
+y_pred_prob_test = predict_probabilities(X_test, W, b)
+
+# Thresholds to test
+thresholds = [0.3, 0.5, 0.7]
+metrics_data = []
+
+# Test three thresholds
+for t in thresholds:
+    acc, prec, rec = evaluate_metrics(y_test, y_pred_prob_test, t)
+    metrics_data.append({
+        'Threshold': f"{t:.1f}",
+        'Accuracy': f"{acc:.4f}",
+        'Precision': f"{prec:.4f}",
+        'Recall': f"{rec:.4f}"
+    })
+
+# Create table comparing all three thresholds
+metrics_df = pd.DataFrame(metrics_data)
+print("\nThreshold Analysis:")
+print(metrics_df.to_string(index=False))
+
+# Recommend optimal threshold with justification
+optimal_threshold = 0.5
+if float(metrics_df.iloc[0]['Recall']) > float(metrics_df.iloc[1]['Recall']):
+    optimal_threshold = 0.3 # Prioritize Recall (finding high-risk patients)
+elif float(metrics_df.iloc[2]['Precision']) > float(metrics_df.iloc[1]['Precision']):
+    optimal_threshold = 0.7 # Prioritize Precision (avoiding false alarms)
+
+justification = (
+    "For medical diagnosis (diabetes risk), **Recall** (identifying true high-risk patients) is often prioritized over Precision to minimize **False Negatives** (missed cases). "
+    "Threshold 0.3 maximizes recall at the expense of precision. "
+    "Threshold 0.7 maximizes precision but significantly reduces recall. "
+    "The recommended threshold is chosen based on the desired balance, often prioritizing recall (lower threshold) in critical health contexts."
+)
+recommended_threshold_val = 0.5 # Default to 0.5, adjust in your actual run
+
+# Simple logic for this simulation: if the recall improves significantly at 0.3, choose 0.3
+if float(metrics_df.iloc[0]['Recall']) > float(metrics_df.iloc[1]['Recall']) * 1.1:
+    recommended_threshold_val = 0.3
+
+print(f"\nRecommended Threshold: {recommended_threshold_val:.1f}")
+print(f"Justification: {justification}")
+
+# Loss Curve Visualisation
+plt.figure(figsize=(8, 5))
+plt.plot(range(epochs), loss_history)
+plt.title('Loss Curve during Training')
+plt.xlabel('Epoch')
+plt.ylabel('Binary Cross-Entropy Loss')
+plt.grid(True, linestyle=':', alpha=0.6)
+# In a local environment, use plt.show()
+# plt.show()
+plt.savefig("loss_curve_visualisation.png")
+print("\n[Loss Curve Visualisation] (saved as loss_curve_visualisation.png)")
+
+# ======================================================================
