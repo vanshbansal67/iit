@@ -1,0 +1,281 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import os
+import random
+
+# --- 0. Simulate Data Loading ---
+# Replace this section with actual file loading if running locally:
+# df = pd.read_csv('crop_classification.csv')
+print("--- WARNING: Using simulated data (300 records) for execution. Replace with actual file load in your environment. ---")
+np.random.seed(42)
+data_size = 300
+num_features = 5
+# Simulate features: nitrogen, phosphorus, potassium, ph, moisture
+features = ['nitrogen', 'phosphorus', 'potassium', 'ph', 'moisture']
+X_sim = np.zeros((data_size, num_features))
+y_sim = np.zeros(data_size, dtype=int)
+
+# Create 3 distinct clusters (for 3 crop types)
+cluster_centers = {
+    0: [80, 50, 40, 6.5, 30], # Crop A
+    1: [40, 70, 60, 5.5, 50], # Crop B
+    2: [100, 30, 80, 7.0, 40] # Crop C
+}
+
+for i in range(data_size):
+    crop_type = random.choice([0, 1, 2])
+    X_sim[i] = cluster_centers[crop_type] + np.random.normal(0, [10, 8, 8, 0.3, 5])
+    y_sim[i] = crop_type
+
+df = pd.DataFrame(X_sim, columns=features)
+df['crop_type'] = y_sim
+# --- End of Simulation ---
+
+
+# ======================================================================
+# 1. Data Preparation and Class Separation
+# ======================================================================
+
+# Separate features (X) and target labels (y)
+X = df[features].values
+y = df['crop_type'].values
+
+# Data Info
+D_features = X.shape[1] # 5 features
+D_samples = X.shape[0] # 300 samples
+print(f"Dataset Information: Shape: ({D_samples}, {D_features+1})")
+print(f"Columns: {df.columns.tolist()}")
+
+# Check missing values and basic statistics
+# Missing values are 0 in simulated data, but included for completeness:
+# print("Missing values:\n", df.isnull().sum())
+
+# Verify unique crop classes
+unique_classes = np.unique(y)
+if len(unique_classes) == 3:
+    print(f"Verify unique crop classes: Exactly {len(unique_classes)} unique crop classes found: {unique_classes}")
+else:
+    raise ValueError("The target variable must contain exactly 3 unique crop classes.")
+
+# Class distribution
+class_distribution = pd.Series(y).value_counts().to_dict()
+print(f"Class distribution: {class_distribution}")
+
+# Split into 80% training and 20% testing (stratify, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, random_state=42, stratify=y
+)
+
+# Print train/test shapes
+print("Train and Test Split:")
+print(f"X_train shape: {X_train.shape}, X_test shape: {X_test.shape}")
+print(f"y_train shape: {y_train.shape}, y_test shape: {y_test.shape}")
+
+
+# ======================================================================
+# 2. Compute Within-Class and Between-Class Scatter Matrices (LDA)
+# ======================================================================
+
+# Compute overall mean vector mu
+mu_overall = np.mean(X_train, axis=0).reshape(-1, 1) # (D, 1)
+
+# Compute mean vector for each class mu_k
+class_means = {}
+for k in unique_classes:
+    X_k = X_train[y_train == k]
+    class_means[k] = np.mean(X_k, axis=0).reshape(-1, 1) # (D, 1)
+
+# Initialize scatter matrices
+S_W = np.zeros((D_features, D_features))
+S_B = np.zeros((D_features, D_features))
+
+# Compute S_W (Within-Class Scatter Matrix)
+for k in unique_classes:
+    X_k = X_train[y_train == k]
+    mu_k = class_means[k]
+    
+    # Compute the covariance matrix for class k (unbiased, 1/N * sum((x-mu)(x-mu)^T))
+    scatter_k = np.zeros((D_features, D_features))
+    for x in X_k:
+        # x is (D,), mu_k is (D, 1). Difference is (D, 1)
+        diff = x.reshape(-1, 1) - mu_k
+        scatter_k += diff @ diff.T
+        
+    S_W += scatter_k
+
+# Compute S_B (Between-Class Scatter Matrix)
+N_k = {} # Class sizes
+for k in unique_classes:
+    N_k[k] = np.sum(y_train == k)
+    mu_k = class_means[k]
+    
+    # Difference from overall mean
+    diff_mu = mu_k - mu_overall
+    
+    # S_B += N_k * (mu_k - mu) @ (mu_k - mu)^T
+    S_B += N_k[k] * (diff_mu @ diff_mu.T)
+
+
+# Print matrix shapes
+print("\nScatter Matrices:")
+print(f"S_W shape: {S_W.shape}, S_B shape: {S_B.shape}")
+
+
+# ======================================================================
+# 3. Calculate LDA Projection Vectors
+# ======================================================================
+
+# Compute S_W_inv = S_W^(-1)
+# Use np.linalg.pinv for pseudo-inverse, which is safer than np.linalg.inv
+S_W_inv = np.linalg.pinv(S_W)
+
+# Compute S_W_inv @ S_B
+S_W_inv_S_B = S_W_inv @ S_B
+
+# Perform eigen decomposition
+# np.linalg.eig returns (eigenvalues, eigenvectors)
+eigenvalues, eigenvectors = np.linalg.eig(S_W_inv_S_B)
+
+# Sort eigenvalues and corresponding eigenvectors
+# Use np.argsort for sorting and reverse to get descending order
+sorted_indices = np.argsort(eigenvalues)[::-1]
+eigenvalues_sorted = eigenvalues[sorted_indices].real
+eigenvectors_sorted = eigenvectors[:, sorted_indices].real
+
+# Since there are C=3 classes, we select C-1 = 2 eigenvectors
+# The projection matrix W is formed by the top 2 eigenvectors
+W_lda = eigenvectors_sorted[:, :2] # (D, 2)
+
+# Print top 2 eigenvalues and corresponding eigenvectors
+print("\nTop LDA Eigenvalues and Eigenvectors:")
+print(f"Top 2 Eigenvalues (LDA): {eigenvalues_sorted[:2].round(4).tolist()}")
+print("Top 2 Eigenvectors (W_lda):\n", W_lda.round(4))
+
+
+# ======================================================================
+# 4. Project Data and Visualize Separation (LDA)
+# ======================================================================
+
+# Project training data to 2D LDA space: Z_LDA = X_train @ W
+Z_lda_train = X_train @ W_lda
+Z_lda_test = X_test @ W_lda
+
+# Create 2D scatter plot of Z_LDA
+plt.figure(figsize=(7, 6))
+for k in unique_classes:
+    plt.scatter(
+        Z_lda_train[y_train == k, 0],
+        Z_lda_train[y_train == k, 1],
+        label=f'Crop {k}',
+        alpha=0.7
+    )
+plt.title('Figure 1: LDA Projected Data (Optimal Class Separation)')
+plt.xlabel('LDA Component 1')
+plt.ylabel('LDA Component 2')
+plt.legend()
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.savefig("figure_1_lda_scatter_plot.png")
+# plt.show() # Uncomment for local display
+print("\n[Figure 1: LDA 2D scatter plot] (saved as figure_1_lda_scatter_plot.png)")
+
+
+# Implement Nearest Centroid Classifier in LDA space
+
+def nearest_centroid_classify(Z_train, y_train, Z_test):
+    """Nearest Centroid classifier implementation."""
+    
+    # 1. Compute class centroids in the projected space
+    centroids = {}
+    for k in np.unique(y_train):
+        centroids[k] = np.mean(Z_train[y_train == k], axis=0)
+        
+    y_pred = []
+    
+    # 2. For each test point, project and assign class of nearest centroid
+    for z_test_point in Z_test:
+        distances = {}
+        for k, centroid in centroids.items():
+            # Euclidean distance in projected space
+            distance = np.sqrt(np.sum((z_test_point - centroid)**2))
+            distances[k] = distance
+            
+        # Assign the class with the minimum distance
+        nearest_class = min(distances, key=distances.get)
+        y_pred.append(nearest_class)
+        
+    return np.array(y_pred)
+
+# Compute and print classification accuracy on the test set
+y_pred_lda = nearest_centroid_classify(Z_lda_train, y_train, Z_lda_test)
+lda_accuracy = accuracy_score(y_test, y_pred_lda)
+print(f"LDA Test Accuracy (Nearest Centroid): {lda_accuracy:.4f}")
+
+
+# ======================================================================
+# 5. PCA Comparison and Analysis
+# ======================================================================
+
+# Implement PCA from scratch on the same training features X_train:
+
+# Center features
+X_centered = X_train - np.mean(X_train, axis=0)
+
+# Compute covariance matrix Sigma
+# Sigma = 1/(N-1) * X_centered^T @ X_centered
+Sigma = np.cov(X_centered, rowvar=False)
+
+# Perform eigen decomposition of Sigma
+pca_eigenvalues, pca_eigenvectors = np.linalg.eig(Sigma)
+
+# Sort eigenvalues and corresponding eigenvectors (descending order)
+pca_sorted_indices = np.argsort(pca_eigenvalues)[::-1]
+pca_eigenvectors_sorted = pca_eigenvectors[:, pca_sorted_indices].real
+
+# Select top 2 principal components
+W_pca = pca_eigenvectors_sorted[:, :2] # (D, 2)
+
+# Project training data to 2D PCA space
+Z_pca_train = X_train @ W_pca
+Z_pca_test = X_test @ W_pca
+
+# Create 2D scatter plot for PCA projected training data
+plt.figure(figsize=(7, 6))
+for k in unique_classes:
+    plt.scatter(
+        Z_pca_train[y_train == k, 0],
+        Z_pca_train[y_train == k, 1],
+        label=f'Crop {k}',
+        alpha=0.7
+    )
+plt.title('Figure 2: PCA Projected Data (Maximum Variance)')
+plt.xlabel('PCA Component 1')
+plt.ylabel('PCA Component 2')
+plt.legend()
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.savefig("figure_2_pca_scatter_plot.png")
+# plt.show() # Uncomment for local display
+print("[Figure 2: PCA 2D scatter plot] (saved as figure_2_pca_scatter_plot.png)")
+
+
+# Compute PCA test accuracy using Nearest Centroid
+y_pred_pca = nearest_centroid_classify(Z_pca_train, y_train, Z_pca_test)
+pca_accuracy = accuracy_score(y_test, y_pred_pca)
+print(f"PCA Test Accuracy (Nearest Centroid): {pca_accuracy:.4f}")
+
+# Final comparison output
+print("\n\nComparison and Analysis:")
+print(f"LDA Test Accuracy (Nearest Centroid): {lda_accuracy:.4f} PCA Test Accuracy (Nearest Centroid): {pca_accuracy:.4f}")
+
+# Analysis (4 to 6 lines)
+analysis_str = (
+    "\nAnalysis:\n"
+    "1. **LDA vs PCA Scatter Plots:** The LDA scatter plot typically shows far greater separation between the three crop clusters compared to the PCA plot. PCA focuses only on maximizing overall variance, which may not align with class boundaries.\n"
+    "2. **LDA vs PCA Accuracies:** LDA (Accuracy: {:.4f}) is generally expected to outperform PCA (Accuracy: {:.4f}) in this supervised classification task.\n"
+    "3. **Reason for LDA Superiority:** LDA explicitly uses the target labels (`crop_type`) to find a projection that maximizes the between-class scatter while minimizing the within-class scatter, making it superior for dimensionality reduction geared towards classification.\n"
+    "4. **Reason for PCA:** PCA is unsupervised and finds directions of maximum data spread, regardless of class labels. While useful for general feature compression, it's sub-optimal for supervised classification."
+).format(lda_accuracy, pca_accuracy)
+
+print(analysis_str)
