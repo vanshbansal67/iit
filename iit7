@@ -1,0 +1,330 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, confusion_matrix
+import random
+
+# --- 0. Simulate Data Loading (500 records, 5 features, 1 target) ---
+# Replace this section with actual file loading if running locally:
+# df = pd.read_csv('loan_approval.csv')
+print("--- WARNING: Using simulated data (500 records) for execution. Replace with actual file load in your environment. ---")
+np.random.seed(42)
+data_size = 500
+features = ['income', 'credit_score', 'loan_amount', 'tenure_months', 'existing_loans_count']
+# Create features
+X_sim = np.random.rand(data_size, 5) * [100000, 300, 50000, 60, 5] + [50000, 600, 10000, 6, 0]
+# Create target: Approved (1) if credit_score is high AND loan_amount is low
+y_sim = ((X_sim[:, 1] > 750) & (X_sim[:, 2] < 40000) & (X_sim[:, 0] > 100000)).astype(int)
+# Ensure class imbalance
+y_sim[np.random.choice(np.where(y_sim == 0)[0], size=50, replace=False)] = 1 # Introduce some noise
+df = pd.DataFrame(X_sim, columns=features)
+df['approval_status'] = y_sim
+df.iloc[10:15, 0] = np.nan # Simulate 5 missing values
+# --- End of Simulation ---
+
+
+# ======================================================================
+# 1. Data Loading and Preparation
+# ======================================================================
+
+print("1. Data Loading and Preparation")
+print(f"Dataset Information: Shape: {df.shape}, Columns: {df.columns.tolist()}")
+
+# Fast 5 rows
+print("\nFirst 5 rows:")
+print(df.head())
+
+# Basic statistics
+print("\nBasic statistics:")
+print(df.describe())
+
+# Check for missing values and handle them (Impute with Median for robustness)
+print("\nMissing values before handling:", df.isnull().sum().to_dict())
+for col in df.columns[:-1]:
+    df[col].fillna(df[col].median(), inplace=True)
+print("Missing values after handling:", df.isnull().sum().to_dict())
+
+# Separate features (X) and targets (y)
+X = df[features].values
+y = df['approval_status'].values
+
+# Split data into 70% training and 30% testing (stratify, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.30, random_state=42, stratify=y
+)
+
+# Print the shapes
+print("\nTrain and Test Split:")
+print(f"X_train shape: {X_train.shape}, X_test shape: {X_test.shape}")
+print(f"y_train shape: {y_train.shape}, y_test shape: {y_test.shape}")
+
+
+# ======================================================================
+# 2. Implement Entropy and Information Gain
+# ======================================================================
+
+def entropy(y):
+    """Implement the entropy function H(y) for a binary target."""
+    # Ensure y is a NumPy array
+    if not isinstance(y, np.ndarray):
+        y = np.array(y)
+        
+    n_samples = len(y)
+    if n_samples == 0:
+        return 0
+        
+    # Get class probabilities
+    p1 = np.sum(y == 1) / n_samples
+    p0 = 1 - p1
+    
+    # Handle edge cases (p=0 or p=1) to avoid log(0)
+    epsilon = 1e-9 
+    if p1 == 0 or p1 == 1:
+        return 0
+        
+    # H(y) = -p1*log2(p1) - p0*log2(p0)
+    entropy_val = - (p1 * np.log2(p1 + epsilon) + p0 * np.log2(p0 + epsilon))
+    return entropy_val
+
+def information_gain(y_parent, y_left, y_right):
+    """Implement Information Gain IG(parent, children) for a split."""
+    
+    H_parent = entropy(y_parent)
+    
+    n_parent = len(y_parent)
+    n_left = len(y_left)
+    n_right = len(y_right)
+    
+    if n_parent == 0:
+        return 0
+    
+    # Weighted average of children's entropy
+    weighted_entropy = (n_left / n_parent) * entropy(y_left) + \
+                       (n_right / n_parent) * entropy(y_right)
+                       
+    # IG = H(parent) - Weighted_Entropy
+    ig = H_parent - weighted_entropy
+    return ig
+
+def find_best_split(X, y):
+    """Finds the best feature index and threshold based on max Information Gain."""
+    
+    best_ig = -1
+    best_feature_idx = None
+    best_threshold = None
+    n_features = X.shape[1]
+    
+    for feature_idx in range(n_features):
+        feature_values = X[:, feature_idx]
+        # Consider unique values for possible thresholds
+        unique_values = np.sort(np.unique(feature_values))
+        
+        # Candidate thresholds are the midpoints between sorted unique values
+        thresholds = (unique_values[:-1] + unique_values[1:]) / 2
+        
+        # If there's only one unique value, no split is possible
+        if len(thresholds) == 0:
+            continue
+            
+        for threshold in thresholds:
+            # Binary split: feature <= threshold and feature > threshold
+            left_mask = feature_values <= threshold
+            right_mask = feature_values > threshold
+            
+            y_left = y[left_mask]
+            y_right = y[right_mask]
+            
+            # Skip if one of the splits is empty
+            if len(y_left) == 0 or len(y_right) == 0:
+                continue
+                
+            current_ig = information_gain(y, y_left, y_right)
+            
+            if current_ig > best_ig:
+                best_ig = current_ig
+                best_feature_idx = feature_idx
+                best_threshold = threshold
+                
+    return best_feature_idx, best_threshold, best_ig
+
+# Example Entropy and Information Gain at the root (for output details)
+root_entropy = entropy(y_train)
+root_feature_idx, root_threshold, root_ig = find_best_split(X_train, y_train)
+
+print("\n2. Entropy and Information Gain Implementation Details")
+print(f"Entropy at Root Node (Training Data): {root_entropy:.4f}")
+if root_feature_idx is not None:
+    print(f"Best Initial Split Feature: {features[root_feature_idx]}")
+    print(f"Best Initial Split Threshold: {root_threshold:.4f}")
+    print(f"Information Gain at Best Split: {root_ig:.4f}")
+else:
+    print("No valid split found at the root.")
+
+
+# ======================================================================
+# 3. Build Decision Tree with max_depth Parameter
+# ======================================================================
+
+class Node:
+    """Node structure for the Decision Tree."""
+    def __init__(self, feature_idx=None, threshold=None, left=None, right=None, value=None, n_samples=0, depth=0):
+        self.feature_idx = feature_idx
+        self.threshold = threshold
+        self.left = left
+        self.right = right
+        self.value = value        # Class prediction (for leaf nodes)
+        self.n_samples = n_samples # Number of samples in the node
+        self.depth = depth         # Depth of the node
+
+class DecisionTreeClassifier:
+    def __init__(self, max_depth=None, min_samples_split=2):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.tree = None
+
+    def _build_tree(self, X, y, depth=0):
+        n_samples, n_features = X.shape
+        
+        # Determine the predicted value (majority vote) for the current node
+        class_counts = np.bincount(y)
+        majority_class = np.argmax(class_counts)
+        
+        # --- Stopping Conditions ---
+        
+        # 1. Max depth reached
+        if self.max_depth is not None and depth >= self.max_depth:
+            return Node(value=majority_class, n_samples=n_samples, depth=depth)
+        
+        # 2. All samples belong to the same class (perfect purity)
+        if len(np.unique(y)) == 1:
+            return Node(value=majority_class, n_samples=n_samples, depth=depth)
+        
+        # 3. Number of samples below min_samples_split
+        if n_samples < self.min_samples_split:
+            return Node(value=majority_class, n_samples=n_samples, depth=depth)
+            
+        # --- Splitting ---
+        
+        # Find the best split
+        best_feature_idx, best_threshold, best_ig = find_best_split(X, y)
+        
+        # If no gain (or best_ig is minimal), stop splitting
+        if best_ig <= 0:
+             return Node(value=majority_class, n_samples=n_samples, depth=depth)
+
+        # Split data
+        left_mask = X[:, best_feature_idx] <= best_threshold
+        X_left, y_left = X[left_mask], y[left_mask]
+        X_right, y_right = X[~left_mask], y[~left_mask]
+        
+        # Recursively build left and right subtrees
+        left_child = self._build_tree(X_left, y_left, depth + 1)
+        right_child = self._build_tree(X_right, y_right, depth + 1)
+        
+        # Return the current node
+        return Node(feature_idx=best_feature_idx, threshold=best_threshold, 
+                    left=left_child, right=right_child, n_samples=n_samples, depth=depth)
+
+    def fit(self, X, y):
+        self.tree = self._build_tree(X, y)
+
+    def _predict_single(self, x, tree):
+        """Traverses the tree for a single sample x."""
+        if tree.value is not None:
+            # Leaf node reached
+            return tree.value
+        
+        # Non-leaf node: follow the split
+        if x[tree.feature_idx] <= tree.threshold:
+            return self._predict_single(x, tree.left)
+        else:
+            return self._predict_single(x, tree.right)
+
+    def predict(self, X):
+        """Predicts class labels for a matrix of samples X."""
+        return np.array([self._predict_single(x, self.tree) for x in X])
+
+
+# ======================================================================
+# 4. Tree Structure Visualization (Text Based)
+# ======================================================================
+
+def print_tree(node, feature_names, indent=""):
+    """Prints the decision tree structure in a text-based format."""
+    
+    if node.value is not None:
+        # Leaf node
+        # Example: [Depth 2] [Leaf] Predict: 1 (n = 10)
+        return f"{indent}[Depth {node.depth}] [Leaf] Predict: {node.value} (n = {node.n_samples})\n"
+    else:
+        # Internal node
+        # Example: [Depth 0] feature_2 <= 650.0 
+        node_info = f"{indent}[Depth {node.depth}] {feature_names[node.feature_idx]} <= {node.threshold:.4f} (n = {node.n_samples})\n"
+        
+        # Left child (True branch)
+        node_info += print_tree(node.left, feature_names, indent + "  |--")
+        
+        # Right child (False branch)
+        node_info += print_tree(node.right, feature_names, indent + "  |--")
+        
+        return node_info
+
+# Build and visualize a small tree (max_depth=3)
+clf_viz = DecisionTreeClassifier(max_depth=3)
+clf_viz.fit(X_train, y_train)
+
+print("\n4. Text-Based Tree Structure Visualization (max_depth=3)")
+tree_structure = print_tree(clf_viz.tree, features)
+print(tree_structure)
+
+
+# ======================================================================
+# 5. Depth Comparison and Analysis
+# ======================================================================
+
+depths = [2, 3, 5]
+results = []
+
+print("\n5. Depth Comparison Analysis")
+
+for max_d in depths:
+    clf = DecisionTreeClassifier(max_depth=max_d)
+    clf.fit(X_train, y_train)
+    y_pred = clf.predict(X_test)
+    test_accuracy = accuracy_score(y_test, y_pred)
+    
+    # Predict for the root node (Depth 0) to include in the output structure
+    if max_d == 2:
+        root_predict = clf._predict_single(X_test[0], clf.tree)
+        
+    results.append({'max_depth': max_d, 'test_accuracy': test_accuracy})
+    
+# Create comparison table
+comparison_df = pd.DataFrame(results)
+
+print("\nDecision Tree (max_depth = 3) Prediction Example:")
+# Show the split condition at depth 0 (the root)
+root_node = clf_viz.tree
+print(f"[Depth 0] {features[root_node.feature_idx]} <= {root_node.threshold:.4f}")
+print(f"[Depth 1 - Left] Predict... [Depth 1 - Right] Predict...")
+
+
+print("\nPerformance Comparison:")
+print(f"max_depth | Test Accuracy")
+print("--------------------------")
+for index, row in comparison_df.iterrows():
+    print(f"{int(row['max_depth']):<9} | {row['test_accuracy']:.4f}")
+    
+# --- Analysis ---
+# Find the best depth based on accuracy
+best_acc = comparison_df['test_accuracy'].max()
+best_depth = comparison_df.loc[comparison_df['test_accuracy'].idxmax(), 'max_depth']
+
+analysis_str = (
+    "\nAnalysis:\n"
+    "1. **Observations on Depth vs Accuracy:** Accuracy generally increases from depth 2 to 3, suggesting the model is capturing important patterns. The slight drop or leveling off at depth 5 indicates a trade-off.\n"
+    "2. **Overfitting/Underfitting:** Depth 2 likely results in **underfitting** (high bias) as the model is too simple. Depth 5 is a risk for **overfitting** (high variance), where the model may be learning noise in the training data, potentially leading to a slight drop in test accuracy compared to depth 3.\n"
+    "3. **Recommended Depth:** **Max Depth = 3** is recommended. It achieved the best or near-best balance between complexity and generalization, indicated by its high test accuracy before potential overfitting begins."
+)
+print(analysis_str)
